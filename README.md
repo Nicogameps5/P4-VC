@@ -380,3 +380,175 @@ Video resultado procesado con YOLO: https://www.youtube.com/watch?v=VU8vAfFiS4U
 
 Video resultado procesado con RT-DETR: https://www.youtube.com/watch?v=x1TQoax1NNQ
 
+## Evaluación comparativa entre modelos orientados al reconocimiento de texto (EasyOCR vs. Florence-2)
+
+En esta segunda tarea, el objetivo es comparar dos formas distintas de leer matrículas sobre un conjunto de imágenes de prueba (`./fotos_prueba`) donde el nombre de cada archivo corresponde a su matrícula real:
+
+* **OCR tradicional (EasyOCR):** Funciona en dos pasos separados: primero busca dónde están las letras (CRAFT) y luego las lee una por una (CRNN).
+* **Modelo de Visión y Lenguaje (Florence-2):** Es una inteligencia artificial más moderna (`microsoft/Florence-2-base`) que mira la imagen completa y entiende el texto directamente al pedirle la orden `<OCR>`.
+
+Debido a que Florence-2 es una red pesada para ejecutarse en procesador sin tarjeta gráfica dedicada, se decidió hacer esta comparativa sobre una batería de imágenes estáticas de vehículos en lugar de analizar el vídeo completo fotograma a fotograma.
+
+### Preparación del entorno y carga de modelos
+
+Primero se importan las librerías necesarias y se añade un pequeño parche para simular el paquete `flash_attn`. Esto evita que el programa dé error al cargar Florence-2 en Windows o cuando se usa solo CPU.
+
+Después se define la función `calculate_similarity`, que mide del 0% al 100% cuánto se parece el texto leído a la matrícula real. Esto es importante porque medir solo el acierto exacto es demasiado estricto: si un modelo lee `1159FPG` como `159FPG`, el acierto exacto sería 0%, pero la similitud refleja que ha acertado casi toda la matrícula.
+
+Por último, se definen las rutas (`./fotos_prueba` y `resultados_comparativa.csv`), las clases de vehículos en YOLO (`[2, 3, 5, 7]` para coches, motos, guaguas y camiones) y se cargan todos los modelos en memoria una sola vez antes de empezar el bucle:
+
+```python
+import sys
+import types
+import importlib.machinery
+import os
+import time
+import cv2
+import pandas as pd
+import matplotlib.pyplot as plt
+import torch
+import easyocr
+import difflib
+from transformers import AutoProcessor, AutoModelForCausalLM
+from PIL import Image
+from ultralytics import YOLO
+
+# Parche para dependencias en Windows
+dummy_flash = types.ModuleType('flash_attn')
+dummy_flash.__spec__ = importlib.machinery.ModuleSpec('flash_attn', None)
+sys.modules['flash_attn'] = dummy_flash
+sys.modules['flash_attn.bert_padding'] = dummy_flash
+
+def calculate_similarity(read_text, true_text):
+    if not read_text or not true_text:
+        return 0.0
+    return difflib.SequenceMatcher(None, read_text, true_text).ratio() * 100
+
+image_folder = "./fotos_prueba"
+csv_output = "resultados_comparativa.csv"
+vehicle_classes = [2, 3, 5, 7]
+
+vehicle_model = YOLO('yolo11n.pt')
+plate_model = YOLO('best.pt')
+
+use_gpu = torch.cuda.is_available()
+ocr_reader = easyocr.Reader(['es', 'en'], gpu=use_gpu)
+
+device = "cuda:0" if use_gpu else "cpu"
+tensor_dtype = torch.float16 if use_gpu else torch.float32
+vlm_processor = AutoProcessor.from_pretrained("microsoft/Florence-2-base", trust_remote_code=True)
+vlm_model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-base", torch_dtype=tensor_dtype, trust_remote_code=True).to(device)
+```
+
+### Detección, recorte y lectura de matrículas
+
+Se recorre la carpeta `./fotos_prueba` imagen por imagen, extrayendo la matrícula real directamente del nombre del archivo. Para cada foto se sigue este proceso:
+
+* **Detección en dos pasos:** Primero `yolo11n.pt` localiza el vehículo y lo recorta; después `best.pt` busca la matrícula únicamente dentro de ese recorte para evitar falsos positivos en el fondo.
+* **Margen de seguridad:** Al recortar la matrícula se añaden 5 píxeles extra por cada lado, ya que los algoritmos de lectura necesitan un pequeño espacio alrededor de las letras para reconocer bien sus bordes.
+* **Lectura en igualdad de condiciones:** Ambos reciben exactamente el mismo recorte de píxeles, midiendo el tiempo que tarda cada uno con `time.time()`. EasyOCR recibe la imagen en blanco y negro, mientras que Florence-2 la recibe a color junto a la instrucción `<OCR>`. Los textos devueltos se limpian para quedarse solo con letras y números en mayúsculas:
+
+```python
+image_files = [f for f in os.listdir(image_folder) if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
+results_list = []
+
+for index, file_name in enumerate(image_files, 1):
+    true_plate_text = file_name.split('.')[0].upper()
+    frame = cv2.imread(os.path.join(image_folder, file_name))
+    if frame is None:
+        continue
+
+    # Detección de vehículo y matrícula
+    vehicle_detections = vehicle_model(frame, classes=vehicle_classes, conf=0.25, verbose=False)
+    if not vehicle_detections[0].boxes:
+        continue
+
+    vx1, vy1, vx2, vy2 = map(int, vehicle_detections[0].boxes[0].xyxy[0])
+    vehicle_crop = frame[vy1:vy2, vx1:vx2]
+
+    plate_detections = plate_model(vehicle_crop, conf=0.25, verbose=False)
+    if not plate_detections[0].boxes:
+        continue
+
+    px1, py1, px2, py2 = map(int, plate_detections[0].boxes[0].xyxy[0])
+    h, w = vehicle_crop.shape[:2]
+    plate_crop = vehicle_crop[max(0, py1 - 5):min(h, py2 + 5), max(0, px1 - 5):min(w, px2 + 5)]
+    if plate_crop.size == 0:
+        continue
+
+    plate_pil_image = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
+
+    # Lectura con EasyOCR
+    start_time = time.time()
+    gray_plate = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+    ocr_output = ocr_reader.readtext(gray_plate, detail=0, paragraph=True)
+    easyocr_time = time.time() - start_time
+    easyocr_text = "".join(filter(str.isalnum, "".join(ocr_output).upper()))
+
+    # Lectura con Florence-2
+    start_time = time.time()
+    prompt = "<OCR>"
+    vlm_inputs = vlm_processor(text=prompt, images=plate_pil_image, return_tensors="pt").to(device, tensor_dtype)
+    with torch.no_grad():
+        generated_ids = vlm_model.generate(
+            input_ids=vlm_inputs["input_ids"],
+            pixel_values=vlm_inputs["pixel_values"],
+            max_new_tokens=64,
+            do_sample=False,
+            num_beams=1
+        )
+    generated_text = vlm_processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+    vlm_time = time.time() - start_time
+
+    vlm_parsed = vlm_processor.post_process_generation(generated_text, task=prompt, image_size=(plate_pil_image.width, plate_pil_image.height))
+    vlm_text = "".join(filter(str.isalnum, vlm_parsed[prompt].upper().replace(" ", "")))
+
+    results_list.append({
+        'filename': file_name,
+        'true_plate': true_plate_text,
+        'easyocr_text': easyocr_text,
+        'easyocr_time': easyocr_time,
+        'easyocr_similarity': calculate_similarity(easyocr_text, true_plate_text),
+        'vlm_text': vlm_text,
+        'vlm_time': vlm_time,
+        'vlm_similarity': calculate_similarity(vlm_text, true_plate_text)
+    })
+```
+
+### Cálculo de métricas y gráficas
+
+Al terminar de analizar todas las imágenes, los resultados se guardan en `resultados_comparativa.csv`. A partir de esa tabla se calculan tres métricas principales para cada modelo (exactitud estricta, similitud media y tiempo medio por imagen) y se generan cinco gráficas: tres de barras para comparar los promedios, una de dispersión que cruza velocidad frente a calidad de lectura, y una de líneas para comprobar la estabilidad del tiempo de procesado a lo largo de la prueba:
+
+```python
+df_results = pd.DataFrame(results_list)
+df_results.to_csv(csv_output, index=False)
+
+processed_count = len(df_results)
+easyocr_accuracy = ((df_results['easyocr_text'] == df_results['true_plate']).sum() / processed_count) * 100
+vlm_accuracy = ((df_results['vlm_text'] == df_results['true_plate']).sum() / processed_count) * 100
+
+easyocr_avg_sim = df_results['easyocr_similarity'].mean()
+vlm_avg_sim = df_results['vlm_similarity'].mean()
+
+easyocr_avg_time = df_results['easyocr_time'].mean()
+vlm_avg_time = df_results['vlm_time'].mean()
+```
+
+![alt text](grafica_1_precision.png)
+![alt text](grafica_2_similitud.png)
+![alt text](grafica_3_tiempo.png)
+![alt text](grafica_4_dispersion.png)
+![alt text](grafica_5_estabilidad.png)
+
+### Resultados y conclusiones
+
+Tras procesar las **51 imágenes válidas** del conjunto de prueba donde se detectó vehículo y matrícula, se obtuvieron los siguientes resultados globales:
+
+| Motor OCR | Exactitud Exacta (%) | Similitud Media (%) | Tiempo Medio / Imagen (s) |
+| :--- | :---: | :---: | :---: |
+| **EasyOCR** | 54.9% (28/51) | 86.3% | 0.269 s |
+| **Florence-2 (VLM)** | 62.7% (32/51) | 92.4% | 2.930 s |
+
+* **Mayor precisión en Florence-2:** El modelo VLM supera a EasyOCR tanto en acierto exacto (62.7% frente a 54.9%) como en similitud media (92.4% frente a 86.3%). Al analizar la placa completa con contexto visual, Florence-2 evita confundir caracteres parecidos (como `0` y `O`, o `B` y `8`) y logra rescatar letras difíciles cuando hay reflejos o inclinación.
+* **Diferencia de velocidad en CPU:** EasyOCR es aproximadamente **11 veces más rápido** que Florence-2 (0.269 segundos frente a 2.930 segundos) por imagen. Esto indica que EasyOCR es la opción adecuada para sistemas en tiempo real o con recursos limitados, mientras que Florence-2 ofrece una calidad de lectura superior pero exige tarjeta gráfica si se quiere aplicar sobre flujos de vídeo continuos.
+* **Estabilidad del rendimiento:** Como muestra la gráfica de estabilidad, ambos modelos mantienen tiempos constantes desde la primera hasta la última imagen sin degradación por temperatura o saturación de memoria, demostrando que cargar las redes una sola vez fuera del bucle optimiza correctamente la ejecución.
