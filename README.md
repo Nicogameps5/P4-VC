@@ -558,3 +558,14 @@ Tras procesar las **51 imágenes válidas** del conjunto de prueba donde se dete
 * **Mayor precisión en Florence-2:** El modelo VLM supera a EasyOCR tanto en acierto exacto (62.7% frente a 54.9%) como en similitud media (92.4% frente a 86.3%). Al analizar la placa completa con contexto visual, Florence-2 evita confundir caracteres parecidos (como `0` y `O`, o `B` y `8`) y logra rescatar letras difíciles cuando hay reflejos o inclinación.
 * **Diferencia de velocidad en CPU:** EasyOCR es aproximadamente **11 veces más rápido** que Florence-2 (0.269 segundos frente a 2.930 segundos) por imagen. Esto indica que EasyOCR es la opción adecuada para sistemas en tiempo real o con recursos limitados, mientras que Florence-2 ofrece una calidad de lectura superior pero exige tarjeta gráfica si se quiere aplicar sobre flujos de vídeo continuos.
 * **Estabilidad del rendimiento:** Como muestra la gráfica de estabilidad, ambos modelos mantienen tiempos constantes desde la primera hasta la última imagen sin degradación por temperatura o saturación de memoria, demostrando que cargar las redes una sola vez fuera del bucle optimiza correctamente la ejecución.
+
+### Especificaciones del entorno de ejecución
+
+Mientras que el entrenamiento de los detectores de la Tarea 1 se realizó en la nube mediante Google Colab, las pruebas de inferencia y comparación de motores OCR de esta segunda tarea se ejecutaron en local bajo las siguientes especificaciones:
+
+* **Dispositivo:** Portátil HP
+* **Sistema Operativo:** Windows 11 (64 bits)
+* **Procesador (CPU):** Intel Core i5
+* **Memoria RAM:** 16 GB
+* **Aceleración gráfica:** Ejecución íntegramente en CPU (sin GPU dedicada CUDA)
+* **Entorno de software:** Python 3.9 (entorno Conda `VC_P4`) con PyTorch, Ultralytics, EasyOCR y Hugging Face Transformers
