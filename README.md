@@ -7,11 +7,11 @@ Nicolás Hernández Castro y Gabriel Godoy Navarro - EII ULPGC 13 de noviembre d
 
 ## Entrenamiento
 
-El conjunto de imagenes de vehículos que se utilizó en esta práctica se puede ver en el siguiente enlace: https://drive.google.com/drive/folders/1si7ISib-EFdn_7kkbebNzmaCSSybdQJM?usp=drive_link
+El conjunto de imágenes de vehículos que se utilizó en esta práctica se puede ver en el siguiente enlace: https://drive.google.com/drive/folders/1si7ISib-EFdn_7kkbebNzmaCSSybdQJM?usp=drive_link
 
 Las imágenes se distribuyen de la siguiente manera:
-* Entrenamiento: 151 imagenes (72%)
-* Validación: 28 imagenes (13%)
+* Entrenamiento: 151 imágenes (72%)
+* Validación: 28 imágenes (13%)
 * Test: 31 imágenes (15%)
 
 Dado que los pesos preentrenados del conjunto COCO no contemplan la categoría de matrícula de vehículos, se procedió al entrenamiento supervisado de un detector especializado utilizando **YOLO** (en concreto la versión ligera `yolo11n.pt`). El proceso se llevó a cabo en Google Colab con GPU NVIDIA Tesla T4 (16 GB VRAM), empleando el dataset mostrado anteriormente con la siguiente configuración:
@@ -41,7 +41,7 @@ Al observar las gráficas de resultado a lo largo de las 50 épocas de entrenami
 * Rendimiento global ($mAP$): El porcentaje de acierto general ($mAP_{50}$) sube enseguida hasta situarse en un valor superior al  90%. A su vez, la métrica más exigente ($mAP_{50-95}$), que mide si la caja está milimétricamente ajustada a los bordes de la matrícula, progresa poco a poco hasta casi el 80%, confirmando que el modelo encuadra las placas con gran exactitud.
 
 ### Apartado Extra: Evaluación comparativa YOLO vs. RT-DETR
-Como ampliación, se evalúa una alternativa moderna basada en Transformers (RT-DTER). 
+Como ampliación, se evalúa una alternativa moderna basada en Transformers (RT-DETR). 
 
 Para llevar a cabo el experimento en igualdad de condiciones, se entrenó rtdetr-l.pt sobre el mismo conjunto de datos durante 50 épocas a resolución 640. Debido a la alta demanda de memoria de las matrices de atención del Transformer, fue necesario ajustar el tamaño de lote a batch=4 (frente a batch=16 de YOLO) para no desbordar los 16 GB de VRAM de la GPU T4:
 
@@ -379,6 +379,12 @@ f_csv.close()
 Video resultado procesado con YOLO: https://www.youtube.com/watch?v=VU8vAfFiS4U
 
 Video resultado procesado con RT-DETR: https://www.youtube.com/watch?v=x1TQoax1NNQ
+
+En ambos vídeos se observa que el sistema detecta y sigue correctamente a los vehículos y peatones, manteniendo un conteo estable sin sumar coches aparcados ni dejar cajas flotando cuando salen de la pantalla. Asimismo, las matrículas se localizan de forma fiable sobre los vehículos cercanos en movimiento.
+
+Al comparar ambos modelos sobre el vídeo:
+* **Detección y tiempos de ejecución:** RT-DETR realiza una detección ligeramente mejor que YOLO (localizando matrículas en 1.813 fotogramas frente a los 1.463 de YOLO, especialmente cuando los coches están algo más lejos o inclinados). Sin embargo, es mucho más pesado computacionalmente, ya que procesar el vídeo completo en local tarda aproximadamente 15 minutos con YOLO, mientras que con RT-DETR se alarga hasta casi 40 minutos.
+* **Limitaciones en la lectura de texto (OCR):** A pesar de que las cajas de las matrículas se detectan bien, el lector OCR falla en muchos fotogramas o lee caracteres sueltos. Esto se debe principalmente a las propias limitaciones del vídeo, ya que a la velocidad a la que pasan los coches genera desenfoque por movimiento, las matrículas a media distancia tienen muy pocos píxeles de resolución y el ángulo oblicuo de la cámara dificulta la lectura automática.
 
 ## Evaluación comparativa entre modelos orientados al reconocimiento de texto (EasyOCR vs. Florence-2)
 
